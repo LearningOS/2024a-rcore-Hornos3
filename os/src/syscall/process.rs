@@ -4,6 +4,7 @@ use crate::{
     task::{exit_current_and_run_next, suspend_current_and_run_next, TaskStatus},
     timer::get_time_us,
 };
+use crate::task::{get_last_start_time, get_syscall_counter, GET_FOR_CURRENT_TASK};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -53,5 +54,16 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 /// YOUR JOB: Finish sys_task_info to pass testcases
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info");
-    -1
+
+    unsafe {
+        (*_ti).status = TaskStatus::Running;    // Is it OK?
+        if let Ok(counter) = get_syscall_counter(GET_FOR_CURRENT_TASK) {
+            (*_ti).syscall_times = counter;
+        } else {
+            return -1;
+        }
+        (*_ti).time = get_last_start_time(GET_FOR_CURRENT_TASK).unwrap_or_else(|| usize::MAX);
+    }
+
+    0
 }
