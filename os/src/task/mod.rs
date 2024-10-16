@@ -56,7 +56,7 @@ lazy_static! {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
             syscall_counter: [0; MAX_SYSCALL_NUM],
-            last_start_time: usize::MAX
+            start_time: usize::MAX
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -87,7 +87,7 @@ impl TaskManager {
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
-        task0.last_start_time = get_time_ms();
+        task0.start_time = get_time_ms();
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -119,7 +119,7 @@ impl TaskManager {
     }
 
     // Get the last start time of a task, if received usize::MAX, return the time of current task
-    fn get_last_start_time(&self, task: usize) -> Option<usize> {
+    fn get_start_time(&self, task: usize) -> Option<usize> {
         let target: usize = if task == GET_FOR_CURRENT_TASK {
             self.inner.exclusive_access().current_task
         } else {
@@ -127,7 +127,7 @@ impl TaskManager {
         };
         let current_task = self.inner.exclusive_access().tasks[target];
         let now = get_time_ms();
-        match current_task.last_start_time {
+        match current_task.start_time {
             usize::MAX => None,
             x if x > now => Some(now - x),
             _ => panic!("Corrupted last start timestamp")
@@ -169,7 +169,9 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
-            inner.tasks[next].last_start_time = get_time_ms();
+            if inner.tasks[next].start_time == usize::MAX {
+                inner.tasks[next].start_time = get_time_ms();
+            }
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -227,5 +229,5 @@ pub fn get_syscall_counter(task: usize) -> Result<[u32; MAX_SYSCALL_NUM], &'stat
 
 /// Get the last start time of a task (MAX_SYSCALL_NUM for current task)
 pub fn get_last_start_time(task: usize) -> Option<usize> {
-    TASK_MANAGER.get_last_start_time(task)
+    TASK_MANAGER.get_start_time(task)
 }
