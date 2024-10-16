@@ -3,6 +3,18 @@
 use crate::config::MAX_SYSCALL_NUM;
 use super::TaskContext;
 
+/// The syscall counter, use bitmask to shrink its size
+#[derive(Copy, Clone)]
+#[allow(unused)]
+pub struct SyscallCtr {
+    /// The bitmask, if a syscall is called, the corresponding bit is set to 1, otherwise 0
+    pub bitmask: [u8; MAX_SYSCALL_NUM / 8 + 1],
+    /// counter index, if the syscall 100 is saved in index 0, then counter_idx[0] = 100
+    pub counter_idx: [u16; 1],
+    /// counter
+    pub counter: [u32; 1]
+}
+
 /// The task control block (TCB) of a task.
 #[derive(Copy, Clone)]
 pub struct TaskControlBlock {

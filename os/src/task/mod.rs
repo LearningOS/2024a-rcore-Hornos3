@@ -21,8 +21,8 @@ use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
-pub use context::TaskContext;
 use crate::timer::get_time_ms;
+pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -51,22 +51,16 @@ pub struct TaskManagerInner {
 lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
-        let num_app = get_num_app();
-        let mut tasks = [TaskControlBlock {
-            task_cx: TaskContext::zero_init(),
-            task_status: TaskStatus::UnInit,
-            syscall_counter: [0; MAX_SYSCALL_NUM],
-            start_time: usize::MAX
-        }; MAX_APP_NUM];
-        for (i, task) in tasks.iter_mut().enumerate() {
-            task.task_cx = TaskContext::goto_restore(init_app_cx(i));
-            task.task_status = TaskStatus::Ready;
-        }
         TaskManager {
-            num_app,
+            num_app: get_num_app(),
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
-                    tasks,
+                    tasks: [TaskControlBlock {
+                        task_cx: TaskContext::zero_init(),
+                        task_status: TaskStatus::UnInit,
+                        syscall_counter: [0; MAX_SYSCALL_NUM],
+                        start_time: usize::MAX
+                    }; MAX_APP_NUM],
                     current_task: 0,
                 })
             },
@@ -78,6 +72,15 @@ lazy_static! {
 pub const GET_FOR_CURRENT_TASK: usize = usize::MAX;
 
 impl TaskManager {
+    /// Post initialization of TASK_MANAGER
+    fn post_initialization(&self) {
+        let mut inner = self.inner.exclusive_access();
+        for i in 0..MAX_APP_NUM {
+            inner.tasks[i].task_cx = TaskContext::goto_restore(init_app_cx(i));
+            inner.tasks[i].task_status = TaskStatus::Ready;
+        }
+    }
+
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -184,6 +187,11 @@ impl TaskManager {
     }
 }
 
+/// Post initialization
+pub fn post_initialization() {
+    TASK_MANAGER.post_initialization();
+}
+
 /// Run the first task in task list.
 pub fn run_first_task() {
     TASK_MANAGER.run_first_task();
@@ -218,16 +226,19 @@ pub fn exit_current_and_run_next() {
 }
 
 /// Increase the syscall usage counter of current task
+#[allow(unused)]
 pub fn increase_syscall_counter(syscall_id: usize) {
     TASK_MANAGER.increase_syscall_counter(syscall_id);
 }
 
 /// Get the syscall usage counter of a task (MAX_SYSCALL_NUM for current task)
+#[allow(unused)]
 pub fn get_syscall_counter(task: usize) -> Result<[u32; MAX_SYSCALL_NUM], &'static str> {
     TASK_MANAGER.get_syscall_counter(task)
 }
 
 /// Get the last start time of a task (MAX_SYSCALL_NUM for current task)
-pub fn get_last_start_time(task: usize) -> Option<usize> {
+#[allow(unused)]
+pub fn get_start_time(task: usize) -> Option<usize> {
     TASK_MANAGER.get_start_time(task)
 }

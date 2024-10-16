@@ -27,6 +27,8 @@ extern crate log;
 
 extern crate alloc;
 
+use crate::task::post_initialization;
+
 #[macro_use]
 mod console;
 pub mod config;
@@ -100,6 +102,7 @@ pub fn rust_main() -> ! {
     heap_alloc::init_heap();
     trap::init();
     loader::load_apps();
+    post_initialization();
     trap::enable_timer_interrupt();
     timer::set_next_trigger();
     task::run_first_task();
