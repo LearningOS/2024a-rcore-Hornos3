@@ -100,8 +100,8 @@ impl TaskManager {
     /// Increase the syscall counter by 1
     fn increase_syscall_counter(&self, syscall_id: usize) {
         let current: usize = self.inner.exclusive_access().current_task;
-        let mut tasks = self.inner.exclusive_access().tasks;
-        tasks[current].syscall_counter[syscall_id] += 1;
+        let mut inner = self.inner.exclusive_access();
+        inner.tasks[current].syscall_counter[syscall_id] += 1;
     }
 
     /// Get the copy of syscall counter, if received usize::MAX, return the counter of current task
@@ -129,8 +129,8 @@ impl TaskManager {
         let now = get_time_ms();
         match current_task.start_time {
             usize::MAX => None,
-            x if x > now => Some(now - x),
-            _ => panic!("Corrupted last start timestamp")
+            x if x <= now => Some(now - x),
+            _ => panic!("Corrupted start timestamp")
         }
     }
 
