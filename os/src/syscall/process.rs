@@ -8,6 +8,7 @@ use crate::{
     },
 };
 use crate::syscall::fs::copy_to_current_user;
+use crate::task::{get_start_time, get_syscall_counter, GET_FOR_CURRENT_TASK};
 use crate::timer::get_time_us;
 
 #[repr(C)]
@@ -60,8 +61,21 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!("kernel: sys_task_info NOT IMPLEMENTED YET!");
-    -1
+    trace!("kernel: sys_task_info");
+
+    if let Ok(counter) = get_syscall_counter(GET_FOR_CURRENT_TASK) {
+        let info: TaskInfo = TaskInfo {
+            status: TaskStatus::Running,
+            syscall_times: counter,
+            time: get_start_time(GET_FOR_CURRENT_TASK).unwrap_or_else(|| usize::MAX),
+        };
+        assert_eq!(copy_to_current_user(_ti, &info, size_of::<TaskInfo>()),
+                   size_of::<TaskInfo>() as isize);
+    } else {
+        return -1;
+    }
+
+    0
 }
 
 // YOUR JOB: Implement mmap.

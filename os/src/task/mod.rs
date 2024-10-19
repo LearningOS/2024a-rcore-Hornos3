@@ -23,6 +23,8 @@ use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+use crate::config::MAX_SYSCALL_NUM;
+use crate::timer::get_time_ms;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -70,6 +72,9 @@ lazy_static! {
     };
 }
 
+/// This constant is used for getting something more conveniently
+pub const GET_FOR_CURRENT_TASK: usize = usize::MAX;
+
 impl TaskManager {
     /// Run the first task in task list.
     ///
@@ -87,6 +92,42 @@ impl TaskManager {
             __switch(&mut _unused as *mut _, next_task_cx_ptr);
         }
         panic!("unreachable in run_first_task!");
+    }
+
+    /// Increase the syscall counter by 1
+    fn increase_syscall_counter(&self, syscall_id: usize) {
+        let current: usize = self.inner.exclusive_access().current_task;
+        let mut inner = self.inner.exclusive_access();
+        inner.tasks[current].syscall_counter[syscall_id] += 1;
+    }
+
+    /// Get the copy of syscall counter, if received usize::MAX, return the counter of current task
+    fn get_syscall_counter(&self, task: usize) -> Result<[u32; MAX_SYSCALL_NUM], &str> {
+        match task {
+            usize::MAX => {
+                let current: usize = self.inner.exclusive_access().current_task;
+                Ok(self.inner.exclusive_access().tasks[current].syscall_counter.clone())
+            }
+            x if x < get_num_app() =>
+                Ok(self.inner.exclusive_access().tasks[x].syscall_counter.clone()),
+            _ => Err("Invalid task id")
+        }
+    }
+
+    // Get the last start time of a task, if received usize::MAX, return the time of current task
+    fn get_start_time(&self, task: usize) -> Option<usize> {
+        let target: usize = if task == GET_FOR_CURRENT_TASK {
+            self.inner.exclusive_access().current_task
+        } else {
+            task
+        };
+        let inner = self.inner.exclusive_access();
+        let now = get_time_ms();
+        match inner.tasks[target].start_time {
+            usize::MAX => None,
+            x if x <= now => Some(now - x),
+            _ => panic!("Corrupted start timestamp")
+        }
     }
 
     /// Change the status of current `Running` task into `Ready`.
@@ -143,6 +184,9 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+            if inner.tasks[next].start_time == usize::MAX {
+                inner.tasks[next].start_time = get_time_ms();
+            }
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -201,4 +245,22 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Increase the syscall usage counter of current task
+#[allow(unused)]
+pub fn increase_syscall_counter(syscall_id: usize) {
+    TASK_MANAGER.increase_syscall_counter(syscall_id);
+}
+
+/// Get the syscall usage counter of a task (MAX_SYSCALL_NUM for current task)
+#[allow(unused)]
+pub fn get_syscall_counter(task: usize) -> Result<[u32; MAX_SYSCALL_NUM], &'static str> {
+    TASK_MANAGER.get_syscall_counter(task)
+}
+
+/// Get the last start time of a task (MAX_SYSCALL_NUM for current task)
+#[allow(unused)]
+pub fn get_start_time(task: usize) -> Option<usize> {
+    TASK_MANAGER.get_start_time(task)
 }
