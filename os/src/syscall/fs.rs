@@ -1,5 +1,6 @@
 //! File and filesystem-related syscalls
 
+use core::ptr::copy;
 use crate::mm::translated_byte_buffer;
 use crate::task::current_user_token;
 
@@ -20,4 +21,26 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
             panic!("Unsupported fd in sys_write!");
         }
     }
+}
+
+#[allow(unused)]
+pub fn copy_to_current_user<T>(user_buf: *mut T, kern_buf: *const T, len: usize) -> isize {
+    let buffers = translated_byte_buffer(current_user_token(), user_buf as *const u8, len);
+    for buffer in buffers {
+        unsafe {
+            copy(kern_buf as *const u8, buffer.as_mut_ptr(), buffer.len());
+        }
+    }
+    len as isize
+}
+
+#[allow(unused)]
+pub fn copy_from_current_user<T>(kern_buf: *mut T, user_buf: *const T, len: usize) -> isize {
+    let buffers = translated_byte_buffer(current_user_token(), user_buf as *const u8, len);
+    for buffer in buffers {
+        unsafe {
+            copy(buffer.as_mut_ptr(), kern_buf as *mut u8, buffer.len());
+        }
+    }
+    len as isize
 }
