@@ -7,6 +7,7 @@ use crate::{
         change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus,
     },
 };
+use crate::mm::{mmap_many, munmap_many};
 use crate::syscall::fs::copy_to_current_user;
 use crate::task::{get_start_time, get_syscall_counter, GET_FOR_CURRENT_TASK};
 use crate::timer::get_time_us;
@@ -79,16 +80,17 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 }
 
 // YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+pub fn sys_mmap(_start: usize, _len: usize, _prot: usize) -> isize {
+    trace!("kernel: sys_mmap");
+    mmap_many(_start, _len, _prot)
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    trace!("kernel: sys_munmap");
+    munmap_many(_start, _len)
 }
+
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
     trace!("kernel: sys_sbrk");

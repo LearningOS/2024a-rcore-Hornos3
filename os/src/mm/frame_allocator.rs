@@ -34,6 +34,7 @@ impl Debug for FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
+        println!("Dropped ppn {:x}", self.ppn.0);
         frame_dealloc(self.ppn);
     }
 }

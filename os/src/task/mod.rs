@@ -24,6 +24,7 @@ pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
 use crate::config::MAX_SYSCALL_NUM;
+use crate::mm::{MapPermission, VirtAddr};
 use crate::timer::get_time_ms;
 
 /// The task manager, where all the tasks are managed.
@@ -197,6 +198,13 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn add_user_map_area(&self, start: VirtAddr, end: VirtAddr, perm: u8) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.insert_framed_area(start, end,
+                               MapPermission::from_bits((perm << 1) | (1 << 4)).unwrap());
+    }
 }
 
 /// Run the first task in task list.
@@ -263,4 +271,9 @@ pub fn get_syscall_counter(task: usize) -> Result<[u32; MAX_SYSCALL_NUM], &'stat
 #[allow(unused)]
 pub fn get_start_time(task: usize) -> Option<usize> {
     TASK_MANAGER.get_start_time(task)
+}
+
+/// add a user map area
+pub fn add_user_map_area(start: usize, end: usize, perm: u8) {
+    TASK_MANAGER.add_user_map_area(VirtAddr::from(start), VirtAddr::from(end), perm)
 }
