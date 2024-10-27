@@ -1,13 +1,15 @@
 //! Types related to task management & Functions for completely changing TCB
-use super::TaskContext;
+use super::{TaskContext, DEFAULT_TASK_PRIORITY};
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use core::cmp::Ordering;
+use crate::timer::get_time_ms;
 
 /// Task control block structure
 ///
@@ -33,6 +35,37 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+}
+
+impl Eq for TaskControlBlock {}
+
+impl PartialEq<Self> for TaskControlBlock {
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
+}
+
+impl PartialOrd<Self> for TaskControlBlock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match isize::partial_cmp(
+            &self.inner.exclusive_access().stride, &other.inner.exclusive_access().stride) {
+            Some(Ordering::Equal) => usize::partial_cmp(&self.pid.0, &other.pid.0),
+            Some(Ordering::Less) => Some(Ordering::Less),
+            Some(Ordering::Greater) => Some(Ordering::Greater),
+            None => panic!()
+        }
+    }
+}
+
+impl Ord for TaskControlBlock {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match isize::cmp(
+            &self.inner.exclusive_access().stride, &other.inner.exclusive_access().stride) {
+            Ordering::Equal => usize::cmp(&self.pid.0, &other.pid.0),
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater
+        }
     }
 }
 
@@ -68,6 +101,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// syscall times
+    pub syscall_counter: [u32; MAX_SYSCALL_NUM],
+
+    /// first start time (ms)
+    pub first_start_time: usize,
+
+    /// task priority
+    pub priority: isize,
+
+    /// task stride
+    pub stride: isize,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +163,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscall_counter: [0; MAX_SYSCALL_NUM],
+                    first_start_time: usize::MAX,
+                    priority: DEFAULT_TASK_PRIORITY,
+                    stride: 0
                 })
             },
         };
@@ -150,6 +199,8 @@ impl TaskControlBlock {
         inner.trap_cx_ppn = trap_cx_ppn;
         // initialize base_size
         inner.base_size = user_sp;
+        // set first start time
+        inner.first_start_time = get_time_ms();
         // initialize trap_cx
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
@@ -191,6 +242,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscall_counter: [0; MAX_SYSCALL_NUM],
+                    first_start_time: usize::MAX,   // todo: Should it inherit from parent process?
+                    priority: DEFAULT_TASK_PRIORITY,
+                    stride: 0,
                 })
             },
         });
@@ -235,6 +290,22 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// increase the syscall counter
+    pub fn increase_syscall_counter(&self, sys_id: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.syscall_counter[sys_id] += 1;
+    }
+
+    /// get first start time
+    pub fn get_first_start_time(&self) -> usize {
+        self.inner.exclusive_access().first_start_time
+    }
+
+    /// get syscall counter
+    pub fn get_syscall_counter(&self) -> [u32; MAX_SYSCALL_NUM] {
+        self.inner.exclusive_access().syscall_counter.clone()
     }
 }
 
