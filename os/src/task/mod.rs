@@ -36,6 +36,15 @@ pub use processor::{
     current_task, current_trap_cx, current_user_token, run_tasks, schedule, take_current_task,
     Processor,
 };
+
+/// The BIG_STRIDE value used to calculate the `pass` value added to a task's stride after executing
+/// for a time slice.
+/// added_pass = BIG_STRIDE / task's priority
+pub const BIG_STRIDE: isize = 16 * 9 * 5 * 7 * 11 * 13;
+
+/// calculate the pass value with given priority
+pub fn get_one_pass(prio: isize) -> isize { BIG_STRIDE / prio }
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     // There must be an application running.
@@ -43,13 +52,15 @@ pub fn suspend_current_and_run_next() {
 
     // ---- access current TCB exclusively
     let mut task_inner = task.inner_exclusive_access();
+    let prio = task_inner.priority;
+    task_inner.stride += get_one_pass(prio);
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     // Change status to Ready
     task_inner.task_status = TaskStatus::Ready;
     drop(task_inner);
     // ---- release current PCB
 
-    // push back to ready queue.
+    // push back to ready pool.
     add_task(task);
     // jump to scheduling cycle
     schedule(task_cx_ptr);
@@ -120,3 +131,6 @@ lazy_static! {
 pub fn add_initproc() {
     add_task(INITPROC.clone());
 }
+
+/// Default task priority
+pub const DEFAULT_TASK_PRIORITY: isize = 16;

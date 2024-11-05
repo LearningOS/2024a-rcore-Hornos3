@@ -1,7 +1,4 @@
-use super::{
-    block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType,
-    EasyFileSystem, DIRENT_SZ,
-};
+use super::{block_cache_sync_all, get_block_cache, BlockDevice, DirEntry, DiskInode, DiskInodeType, EasyFileSystem, DIRENT_SZ};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -42,7 +39,7 @@ impl Inode {
             .modify(self.block_offset, f)
     }
     /// Find inode under a disk inode by name
-    fn find_inode_id(&self, name: &str, disk_inode: &DiskInode) -> Option<u32> {
+    pub fn find_inode_id(&self, name: &str, disk_inode: &DiskInode) -> Option<u32> {
         // assert it is a directory
         assert!(disk_inode.is_dir());
         let file_count = (disk_inode.size as usize) / DIRENT_SZ;
@@ -155,6 +152,32 @@ impl Inode {
             v
         })
     }
+
+    /// debug ls
+    pub fn debug_ls(&self) -> Vec<(String, u32, [u32; 28])> {
+        let _fs = self.fs.lock();
+        let mut v: Vec<(String, u32, [u32; 28])> = Vec::new();
+        self.read_disk_inode(|disk_inode| {
+            let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+            for i in 0..file_count {
+                let mut dirent = DirEntry::empty();
+                assert_eq!(
+                    disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                v.push((String::from(dirent.name()), dirent.inode_id(), [0; 28]));
+            }
+        });
+
+        // for entry in v.iter_mut() {
+        //     let inode = self.find(&entry.0).unwrap();
+        //     entry.2 = inode.get_direct_blocks();
+        // }
+
+        v
+
+    }
+
     /// Read data from current inode
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
         let _fs = self.fs.lock();
@@ -181,6 +204,83 @@ impl Inode {
                 fs.dealloc_data(data_block);
             }
         });
+
         block_cache_sync_all();
+    }
+
+    /// get inode id
+    pub fn get_inode_id(&self) -> u64 {
+        self.fs.lock().get_inode_id(self.block_id, self.block_offset)
+    }
+
+    /// b
+    pub fn get_block_id(&self) -> usize { self.block_id }
+
+    /// b
+    pub fn get_block_offset(&self) -> usize { self.block_offset }
+
+    /// b
+    pub fn get_direct_blocks(&self) -> [u32; 28] {
+        self.read_disk_inode(|di| {
+            di.direct
+        })
+    }
+
+    /// is a file
+    pub fn is_file(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_file() )
+    }
+
+    /// create a hard link
+    pub fn create_link_unchecked(&self, root: &Self, name: &str) -> bool {
+        root.modify_disk_inode(|di| {
+            let file_count = (di.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            self.increase_size(new_size as u32, di, &mut root.fs.lock());
+            let dirent = DirEntry::new(name, self.get_inode_id() as u32);
+            di.write_at(file_count * DIRENT_SZ, dirent.as_bytes(), &root.block_device);
+            true
+        })
+    }
+
+    /// get the number of hard links (only root inode can use)
+    pub fn get_hard_link_count(&self, name: String) -> u32 {
+        let mut counter: u32 = 0;
+
+        self.read_disk_inode(|di| {
+            let id = self.find_inode_id(&name, di).unwrap();
+            let file_count = (di.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    di.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                if dirent.inode_id() == id {
+                    counter += 1;
+                }
+            }
+        });
+
+        assert!(counter >= 1);
+        counter
+    }
+
+    /// unlink (only root inode can use)
+    pub fn unlink(&self, name: &str) {
+        self.modify_disk_inode(|di| {
+            let file_count = (di.size as usize) / DIRENT_SZ;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    di.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    let unlinked = DirEntry::new("\0", u32::MAX);
+                    di.write_at(DIRENT_SZ * i, unlinked.as_bytes(), &self.block_device);
+                }
+            }
+        })
     }
 }

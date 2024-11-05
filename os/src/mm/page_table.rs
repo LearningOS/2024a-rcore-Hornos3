@@ -1,9 +1,11 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
-use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, MapPermission, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use crate::config::PAGE_SIZE;
+use crate::task::{current_task, current_user_token};
 
 bitflags! {
     /// page table entry flags
@@ -217,6 +219,87 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+pub fn is_prot_valid(prot: usize) -> bool {
+    prot > 0 && prot <= 7
+}
+
+/// mmap api
+pub fn map_many_inner(start: usize, len: usize, prot: usize) -> isize {
+    if !is_prot_valid(prot) {
+        println!("map_many_inner: prot {} invalid", prot);
+        return -1;
+    }
+    let token = current_user_token();
+    let pt: PageTable = PageTable::from_token(token);
+    if start & (PAGE_SIZE - 1) != 0 {
+        println!("map_many_inner: start address 0x{:x} misaligned", start);
+        return -1;
+    }
+    let mut vpn = VirtAddr::from(start).floor();
+    while vpn < VirtAddr::from(start + len).ceil() {
+        match pt.translate(vpn) {
+            Some(ppn) => {
+                if ppn.is_valid() {
+                    println!("map_many_inner: already found pte for vpn 0x{:x}: 0x{:x}",
+                             vpn.0, ppn.ppn().0);
+                    return -1;
+                }
+            }
+            _ => ()
+        }
+        vpn.step();
+    }
+    println!("prot: {}, start = 0x{:x}, len = 0x{:x}", prot, start, len);
+
+    add_current_user_map_area(VirtAddr::from(start), VirtAddr::from(start + len), prot as u8);
+
+    0
+}
+
+/// unmap api
+pub fn unmap_many_inner(start: usize, len: usize) -> isize {
+    let token = current_user_token();
+    let pt: PageTable = PageTable::from_token(token);
+    let mut vpn = VirtAddr::from(start).floor();
+    while vpn <= VirtAddr::from(start + len).ceil() {
+        match pt.find_pte(vpn) {
+            Some(pte) => {
+                if !pte.is_valid() {
+                    println!("unmap_many_inner: pte invalid for vpn {:x}", vpn.0);
+                    return -1
+                }
+            }
+            None => {
+                println!("unmap_many_inner: pte not found for vpn {:x}", vpn.0);
+                return -1
+            }
+        }
+        vpn.step();
+    }
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    let mut vpn = VirtAddr::from(start).floor();
+    while vpn < VirtPageNum::from(VirtAddr::from(start + len).ceil()) {
+        println!("unmap vpn {:x}", vpn.0);
+        inner.memory_set.remove_area_with_start_vpn(vpn);
+        vpn.step();
+    }
+    0
+}
+
+/// add map area for current task
+fn add_current_user_map_area(start: VirtAddr, end: VirtAddr, perm: u8) {
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    let mut ptr = VirtAddr::from(start);
+    while ptr < end {
+        println!("mmap vpn {:x}", VirtPageNum::from(ptr).0);
+        inner.memory_set.insert_framed_area(ptr, VirtAddr::from(ptr.0 + PAGE_SIZE),
+                                            MapPermission::from_bits((perm << 1) | (1 << 4)).unwrap());
+        ptr = VirtAddr::from(ptr.0 + PAGE_SIZE);
+    }
 }
 
 /// An abstraction over a buffer passed from user space to kernel space

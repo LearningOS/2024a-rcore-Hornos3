@@ -43,6 +43,7 @@ impl OSInode {
         let mut buffer = [0u8; 512];
         let mut v: Vec<u8> = Vec::new();
         loop {
+
             let len = inner.inode.read_at(inner.offset, &mut buffer);
             if len == 0 {
                 break;
@@ -52,9 +53,15 @@ impl OSInode {
         }
         v
     }
+
+    /// get the inode inside
+    pub fn get_inode(&self) -> Arc<Inode> {
+        self.inner.exclusive_access().inode.clone()
+    }
 }
 
 lazy_static! {
+    /// Initialization of root inode
     pub static ref ROOT_INODE: Arc<Inode> = {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
