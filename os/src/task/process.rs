@@ -1,5 +1,6 @@
 //! Implementation of  [`ProcessControlBlock`]
 
+use alloc::collections::BTreeMap;
 use super::id::RecycleAllocator;
 use super::manager::insert_into_pid2process;
 use super::TaskControlBlock;
@@ -13,7 +14,9 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::any::Any;
 use core::cell::RefMut;
+use core::cmp::Ordering;
 
 /// Process Control Block
 pub struct ProcessControlBlock {
@@ -21,6 +24,43 @@ pub struct ProcessControlBlock {
     pub pid: PidHandle,
     /// mutable
     inner: UPSafeCell<ProcessControlBlockInner>,
+}
+
+/// a enum for symbolizing resource type for indexing
+#[derive(Clone)]
+pub enum ResourceType {
+    /// mutex resource
+    Mutex(isize),
+    /// semaphore resource
+    Semaphore(isize, usize)
+}
+
+impl Eq for ResourceType {}
+
+impl PartialEq<Self> for ResourceType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ResourceType::Mutex(a), ResourceType::Mutex(b)) => a == b,
+            (ResourceType::Semaphore(a, _), ResourceType::Semaphore(b, _)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl PartialOrd<Self> for ResourceType {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (ResourceType::Mutex(a), ResourceType::Mutex(b)) => Some(a.cmp(b)),
+            (ResourceType::Semaphore(a, _), ResourceType::Semaphore(b, _)) => Some(a.cmp(b)),
+            _ => self.type_id().partial_cmp(&other.type_id())
+        }
+    }
+}
+
+impl Ord for ResourceType {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
 }
 
 /// Inner of Process Control Block
@@ -49,6 +89,16 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// resource relationship of mutexes and semaphores
+    pub resource_relation: BTreeMap<ResourceType, usize>,
+    /// resource available map
+    pub available_resources: Vec<usize>,
+    /// allocated resource map
+    pub allocation_matrix: Vec<Vec<usize>>,
+    /// needed resource map
+    pub needing_matrix: Vec<Vec<usize>>,
+    /// deadlock detector enabler
+    pub enable_deadlock_detector: bool
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +131,126 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+    /// update deadlock detector table
+    pub fn update_dd_new_resource(&mut self, res: ResourceType) {
+        let resource_count = self.resource_relation.len();
+        let task_count= self.tasks.len();
+        match res {
+            ResourceType::Mutex(id) => {
+                // reuse released mutex
+                if self.resource_relation.contains_key(&ResourceType::Mutex(id)) {
+                    // skipped, because mutex doesn't implement deletion
+                    assert!(false);
+                }
+                self.resource_relation.insert(res, resource_count);
+                self.available_resources.push(1);
+                self.allocation_matrix.push(
+                    (0..task_count).map(|_| 0).collect::<Vec<usize>>()
+                );
+                self.needing_matrix.push(
+                    (0..task_count).map(|_| 0).collect::<Vec<usize>>()
+                );
+            }
+            ResourceType::Semaphore(id, max_resource_count) => {
+                if self.resource_relation.contains_key(&ResourceType::Semaphore(id, max_resource_count)) {
+                    // skipped, because mutex doesn't implement deletion
+                    assert!(false);
+                }
+                self.resource_relation.insert(res, resource_count);
+                self.available_resources.push(max_resource_count);
+                self.allocation_matrix.push(
+                    (0..task_count).map(|_| 0).collect::<Vec<usize>>()
+                );
+                self.needing_matrix.push(
+                    (0..task_count).map(|_| 0).collect::<Vec<usize>>()
+                );
+            }
+        }
+    }
+    /// update for new thread
+    pub fn update_dd_new_thread(&mut self) {
+        for line in self.allocation_matrix.iter_mut() {
+            line.push(0);
+        }
+        for line in self.needing_matrix.iter_mut() {
+            line.push(0);
+        }
+    }
+    /// clear matrix column for reusing tid
+    pub fn clear_dd_columns(&mut self, tid: usize) {
+        for line in self.allocation_matrix.iter_mut() {
+            line[tid] = 0;
+        }
+        for line in self.needing_matrix.iter_mut() {
+            line[tid] = 0;
+        }
+    }
+    /// clear matrix row for reusing resource
+    pub fn clear_dd_lines(&mut self, res: ResourceType) {
+        let index = *(self.resource_relation.get(&res).unwrap());
+
+        for e in self.allocation_matrix[index].iter_mut() {
+            *e = 0usize;
+        }
+        for e in self.needing_matrix[index].iter_mut() {
+            *e = 0usize;
+        }
+        match res {
+            ResourceType::Mutex(_) => self.available_resources[index] = 1,
+            ResourceType::Semaphore(_, val) => self.available_resources[index] = val
+        }
+    }
+    /// allocate a resource
+    pub fn try_allocate_resource(&mut self, res: ResourceType, current_tid: usize) -> bool {
+        let mut thread_status_emu: Vec<bool>
+            = (0..self.thread_count()).map(|_| false).collect::<Vec<bool>>();
+        let res_count = self.available_resources.len();
+        let res_index = *(self.resource_relation.get(&res).unwrap());
+        self.needing_matrix[res_index][current_tid] += 1;
+        let mut emu_available_resources = self.available_resources.clone();
+        let emu_allocation_matrix = self.allocation_matrix.clone();
+
+        loop {
+            let mut found_finishable_thread = false;
+            for tid in 0..self.thread_count() {
+                let needing_vector: Vec<usize> = self.needing_matrix.iter().map(
+                    |res_needing_vec| res_needing_vec[tid]
+                ).collect();
+                if !thread_status_emu[tid] && (0..res_count).all(|i|
+                    needing_vector[i] <= emu_available_resources[i] ) {
+                    thread_status_emu[tid] = true;
+                    found_finishable_thread = true;
+                    // emulation for releasing resources
+                    for i in 0..emu_available_resources.len() {
+                        emu_available_resources[i] += emu_allocation_matrix[i][tid];
+                    }
+                    break;
+                }
+            }
+
+            if !found_finishable_thread {
+                return if thread_status_emu.iter().all(|b| *b) {
+                    true
+                } else {
+                    self.needing_matrix[res_index][current_tid] -= 1;
+                    false
+                }
+            }
+        }
+    }
+    /// real allocation
+    pub fn allocate_one(&mut self, res: ResourceType, current_tid: usize) {
+        let res_index = *(self.resource_relation.get(&res).unwrap());
+        self.needing_matrix[res_index][current_tid] -= 1;
+        self.available_resources[res_index] -= 1;
+        self.allocation_matrix[res_index][current_tid] += 1;
+    }
+    /// real deallocation
+    pub fn deallocate_one(&mut self, res: ResourceType, current_tid: usize) {
+        let res_index = *(self.resource_relation.get(&res).unwrap());
+        self.available_resources[res_index] += 1;
+        self.allocation_matrix[res_index][current_tid] -= 1;
     }
 }
 
@@ -119,6 +289,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    resource_relation: BTreeMap::new(),
+                    available_resources: Vec::new(),
+                    allocation_matrix: Vec::new(),
+                    needing_matrix: Vec::new(),
+                    enable_deadlock_detector: false
                 })
             },
         });
@@ -144,6 +319,8 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+        // No resources are created when the process is created, so we don't need to update
+        // deadlock detector
         drop(process_inner);
         insert_into_pid2process(process.getpid(), Arc::clone(&process));
         // add main thread to scheduler
@@ -245,6 +422,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    resource_relation: BTreeMap::new(),
+                    available_resources: Vec::new(),
+                    allocation_matrix: Vec::new(),
+                    needing_matrix: Vec::new(),
+                    enable_deadlock_detector: false
                 })
             },
         });

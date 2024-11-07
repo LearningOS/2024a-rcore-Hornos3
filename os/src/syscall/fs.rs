@@ -2,6 +2,8 @@ use crate::fs::{make_pipe, open_file, OpenFlags, Stat};
 use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::{current_process, current_task, current_user_token};
 use alloc::sync::Arc;
+use core::intrinsics::copy;
+
 /// write syscall
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!(
@@ -148,4 +150,15 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
     -1
+}
+
+#[allow(unused)]
+pub fn copy_to_current_user<T>(user_buf: *mut T, kern_buf: *const T, len: usize) -> isize {
+    let buffers = translated_byte_buffer(current_user_token(), user_buf as *const u8, len);
+    for buffer in buffers {
+        unsafe {
+            copy(kern_buf as *const u8, buffer.as_mut_ptr(), buffer.len());
+        }
+    }
+    len as isize
 }
